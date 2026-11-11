@@ -40,6 +40,11 @@ def get_base_url(session):
     raw_server = session.config["server"]
     return raw_server.split("/jsonrpc.do")[0]
 
+def get_session_http_and_jsessionid(session):
+    jsessionid = session.config["jsessionid"] if "jsessionid" in session.config else None
+    http = session.config["_http_session"] if "_http_session" in session.config else None
+    return http, jsessionid
+
 def fetch_teachers_map(session, date_list):
     """
     Ruft Lehrerkürzel über den internen WebUntis-Web-Endpunkt ab,
@@ -47,8 +52,7 @@ def fetch_teachers_map(session, date_list):
     """
     teachers_map = {}
     base_url = get_base_url(session)
-    jsessionid = session.config.get("jsessionid")
-    http = session.config.get("_http_session")
+    http, jsessionid = get_session_http_and_jsessionid(session)
 
     if not jsessionid or not http:
         return teachers_map
@@ -98,8 +102,7 @@ def fetch_exams_list(session, start_date, end_date):
     """
     exams = []
     base_url = get_base_url(session)
-    jsessionid = session.config.get("jsessionid")
-    http = session.config.get("_http_session")
+    http, jsessionid = get_session_http_and_jsessionid(session)
 
     if not jsessionid or not http:
         return exams
