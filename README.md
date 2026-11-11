@@ -1,92 +1,94 @@
 # untis-sync
 
-Synchronisiert WebUntis zuverlässig mit Google Calendar über GitHub Actions – mit automatischer Löschung von Entfällen, Farbcodierung für Tests und Supplierungen sowie Push-Benachrichtigungen via ntfy.
+Automated synchronization between WebUntis and Google Calendar via GitHub Actions, featuring cancellation pruning, event color-coding, student API workarounds, and push notifications.
 
 ---
 
-## Warum das existiert
+## Why this exists
 
-Ich tracke mein gesamtes Leben im Google Kalender – Schlaf mit *Sleep as Android*, Termine, Sport und Arbeit –, um eine zentrale Quelle für Zeitplanung und Zeitanalyse zu haben.
-
-WebUntis ist ein geschlossenes Silo: Die offizielle App ist hakelig, iCal-Exporte sind träge, und bestehende Sync-Lösungen haben nervige Schwächen:
-- **Entfallene Stunden bleiben im Kalender:** Man sieht Termine, obwohl kein Unterricht stattfindet.
-- **Keine Unterscheidung:** Supplierungen, Tests und Raumänderungen sehen im Kalender exakt gleich aus wie regulärer Unterricht.
-- **Gesperrte Schnittstellen:** Schüler-Accounts dürfen Lehrernamen über die offizielle WebUntis-API nicht abfragen (`-8509: no right for getTeachers()`).
-
-Dieses Tool löst genau diese Probleme. Es wurde mit Gemini vibe-coded – hier ist es, have fun.
+This tool integrates WebUntis schedules into Google Calendar for unified personal time tracking and scheduling (alongside sleep tracking via *Sleep as Android* and other daily logs). It replaces stale iCal exports with an automated sync pipeline that removes cancelled classes, color-codes substitutions and tests, and delivers instant push notifications when schedules change.
 
 ---
 
-## Was das Tool macht
+## What it does
 
-- **Kein Unterricht = Kein Eintrag:** Ausfallende Stunden (`code == "cancelled"`) werden via Google Calendar API restlos aus dem Kalender gelöscht.
-- **Farbcodierung (`colorId`):**
-  - 🔴 **Rot (`colorId: "11"` - Tomato) + `[TEST]`:** Schularbeiten, Tests und Prüfungen.
-  - 🟠 **Orange (`colorId: "6"` - Tangerine) + `[SUPPL.]`:** Supplierungen und Vertretungsstunden.
-  - 🟡 **Gelb (`colorId: "5"` - Banana) + `[RAUM]`:** Raumänderungen gegenüber dem Originalraum.
-  - Reguläre Stunden behalten die Standardfarbe deines Kalenders.
-- **Lehrerkürzel-Bypass:** Da die JSON-RPC-Methode `getTeachers()` für Schüler gesperrt ist, parsed das Skript die internen WebUntis-Webdaten (`/api/public/timetable/weekly/data`) und mappt Lehrer-IDs zu ihren Kürzeln.
-- **Prüfungs-Erkennung:** Fragt `/api/exams` ab und gleicht zusätzlich Lehrstoff-Felder auf Test-Keywords ab.
-- **Minimalistische Metadaten:** Keine Platzhalter wie *"Keine Daten"*, *"k.A."* oder redundante *"Status: Regulär"*-Zeilen. Es steht nur im Termin, was tatsächlich vorhanden ist (Fach, Lehrer, Raum, Klasse/Gruppe, Notiz/Lehrstoff).
-- **Push-Benachrichtigungen via [ntfy.sh](https://ntfy.sh):** Ändert sich heute oder morgen kurzfristig eine Stunde (Entfall, Vertretung, Raum), erhältst du sofort einen Push-Alert auf dein Smartphone. State-Tracking im Kalendereintrag sorgt dafür, dass jede Änderung exakt einmal gemeldet wird.
+- **No class = no event:** Cancelled lessons (`elem.code == "cancelled"`) are permanently deleted from Google Calendar via the Calendar API rather than lingering as misleading blocks.
+- **Visual Color-Coding:**
+  - 🔴 **Tomato (`colorId: "11"`) + `[TEST]`:** Exams, tests, and assessments (identified via the WebUntis exams API and keyword regex in lesson topics).
+  - 🟠 **Tangerine (`colorId: "6"`) + `[SUPPL.]`:** Substitutions and irregular periods.
+  - 🟡 **Banana (`colorId: "5"`) + `[RAUM]`:** Room changes relative to the original scheduled room.
+  - Regular periods keep your calendar's default accent color.
+- **Teacher Resolution Workaround:** Student accounts are typically blocked from invoking `getTeachers()` via the standard JSON-RPC interface (`error -8509`). The engine bypasses this limitation by querying the internal weekly web endpoint (`/api/public/timetable/weekly/data`) using an authenticated web session to map teacher IDs to their abbreviations.
+- **Minimalist Event Descriptions:** Displays only data that actually exists. Eliminates redundant placeholders such as *"None"*, *"N/A"*, or unnecessary *"Status: Regular"* tags.
+- **Instant Push Alerts via [ntfy.sh](https://ntfy.sh):** Sends an immediate notification to your smartphone if a class for today or tomorrow is cancelled, substituted, or moved. Event-level change tracking ensures each modification is only alerted once.
 
 ---
 
-## Setup & Konfiguration
+## Repository Structure
 
-### 1. Repository forken & klonen
+- **`untis_core.py`**: Core engine handling authenticated WebUntis sessions, teacher/exam extraction, Google Calendar API CRUD operations, and ntfy webhooks.
+- **`sync.py`**: Periodic synchronization script targeting a rolling 28-day schedule window via GitHub Actions.
+- **`sync_year.py`**: Batch-import script to sync the full academic year in 14-day chunks.
+- **`setup.py`**: Interactive terminal wizard that validates credentials, tests API connections, configures sync intervals, and securely uploads repository secrets.
+- **`.github/workflows/sync.yml`**: Scheduled workflow executing the recurring sync.
+- **`.github/workflows/sync_year.yml`**: Manual workflow for full-year calendar initialization.
+
+---
+
+## Setup & Configuration
+
+### 1. Fork & Clone
 ```bash
-git clone https://github.com/DEIN_USERNAME/untis-sync.git
+git clone https://github.com/YOUR_USERNAME/untis-sync.git
 cd untis-sync
 pip install -r requirements.txt
 ```
 
-### 2. Google Calendar Vorbereitung
-1. In der [Google Cloud Console](https://console.cloud.google.com/) ein Projekt anlegen und die **Google Calendar API** aktivieren.
-2. Einen **Service Account** anlegen, einen neuen JSON-Schlüssel generieren und lokal speichern (z. B. als `service_account.json`).
-3. Google Kalender öffnen, Ziel-Kalender auswählen und diesen für die E-Mail-Adresse des Service Accounts freigeben (Berechtigung: *Termine ändern*).
-4. Kalender-ID aus den Kalender-Einstellungen kopieren.
+### 2. Google Calendar Preparation
+1. Open the [Google Cloud Console](https://console.cloud.google.com/), create a project, and enable the **Google Calendar API**.
+2. Create a **Service Account**, generate a JSON key, and download it.
+3. Open Google Calendar, create or select your target calendar, and share it with the service account email address (Permission: *Make changes to events*).
+4. Copy the **Calendar ID** from your calendar settings.
 
-### 3. Konfiguration durchführen
+### 3. Run Configuration
 
-#### Option A: Interaktiver Setup-Wizard (Empfohlen)
-Starte einfach den Assistenten im Terminal:
+#### Option A: Interactive Setup Wizard (Recommended)
 ```bash
 python setup.py
 ```
-Der Assistent:
-- Fragt Untis- und Google-Daten ab und testet auf Wunsch sofort den Login.
-- Lässt dich das gewünschte Sync-Intervall für GitHub Actions auswählen.
-- Erkennt eine installierte GitHub CLI (`gh`) und lädt alle Secrets **mit einer Bestätigung verschlüsselt in dein GitHub-Repo hoch** – ohne Klick-Orgie im Browser.
+The wizard will:
+- Prompt for your WebUntis credentials and test login connectivity.
+- Read your Google service account JSON key file and calendar ID.
+- Prompt for an optional `ntfy` notification topic.
+- Let you choose your preferred GitHub Actions sync interval.
+- Automatically encrypt and upload all secrets to your GitHub repository using the GitHub CLI (`gh`).
 
-#### Option B: Schnell via `.env` und GitHub CLI
+#### Option B: Using `.env` and GitHub CLI
 ```bash
 cp .env.example .env
-# Werte in .env eintragen
+# Edit credentials in .env
 gh secret set -f .env
 ```
 
-#### Option C: Manuell in den GitHub Repository Settings
-Unter **Settings ➔ Secrets and variables ➔ Actions** folgende Secrets anlegen:
+#### Option C: Manual Entry in GitHub Settings
+Add the following secrets under **Settings ➔ Secrets and variables ➔ Actions**:
 
-| Secret | Beschreibung |
+| Secret | Description |
 |---|---|
-| `UNTIS_SERVER` | Serveradresse (z. B. `tipo.webuntis.com`) |
-| `UNTIS_SCHOOL` | Schulname in WebUntis |
-| `UNTIS_USER` | WebUntis Benutzername |
-| `UNTIS_PASSWORD` | WebUntis Passwort |
-| `CALENDAR_ID` | Ziel Google Kalender ID |
-| `GOOGLE_CREDENTIALS` | Vollständiger JSON-Inhalt des Service-Account-Keys |
-| `NTFY_TOPIC` *(optional)* | Topic-Name für ntfy.sh Push-Alerts |
+| `UNTIS_SERVER` | WebUntis server domain (e.g. `tipo.webuntis.com`) |
+| `UNTIS_SCHOOL` | School identifier in WebUntis |
+| `UNTIS_USER` | Your WebUntis username |
+| `UNTIS_PASSWORD` | Your WebUntis password |
+| `CALENDAR_ID` | Target Google Calendar ID |
+| `GOOGLE_CREDENTIALS` | Complete JSON content of the service account key |
+| `NTFY_TOPIC` *(optional)* | Topic name for push notifications via ntfy.sh |
 
 ---
 
-## Synchronisations-Taktung
+## Synchronization Schedule
 
-Der Zeitplan wird in [`.github/workflows/sync.yml`](.github/workflows/sync.yml) gesteuert:
-- **Schulzeit (Mo–Fr 06:00 – 17:00 CET):** Alle 5 Minuten
-- **Außerhalb & Wochenende:** Alle 30 Minuten
+Configured in [`.github/workflows/sync.yml`](.github/workflows/sync.yml):
+- **School Hours (Mon–Fri 06:00 – 17:00 CET):** Every 5 minutes
+- **Evenings & Weekends:** Every 30 minutes
 
-In öffentlichen GitHub-Repositories sind GitHub Actions Runner-Minuten **vollständig unbegrenzt und kostenlos**. Über `setup.py` kann der Takt jederzeit angepasst werden.
-
-Für einen einmaligen Komplettabruf des ganzen Schuljahres existiert der manuelle Workflow **WebUntis School Year Sync** (`sync_year.py`).
+On public GitHub repositories, GitHub Actions minutes are **unlimited and free**. You can adjust the cron schedule at any time via `setup.py` or by editing `sync.yml` directly.
