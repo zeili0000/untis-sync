@@ -1,3 +1,4 @@
+import os
 import datetime
 from untis_core import (
     init_google_calendar,
@@ -12,6 +13,10 @@ def main():
     print("=== Starte WebUntis ➔ Google Calendar Sync (28 Tage) ===")
     cal_service, calendar_id = init_google_calendar()
     s = init_untis_session(useragent="UntisSyncDaily")
+
+    ntfy_topic = os.environ.get("NTFY_TOPIC", "").strip() or None
+    if ntfy_topic:
+        print(f"Push-Benachrichtigungen via ntfy aktiv: Topic '{ntfy_topic}'")
 
     today = datetime.date.today()
     end_date = today + datetime.timedelta(days=28)
@@ -41,7 +46,13 @@ def main():
 
     for elem in timetable:
         res = sync_single_period(
-            cal_service, calendar_id, elem, teachers_map, klassen_map, exams_list
+            cal_service,
+            calendar_id,
+            elem,
+            teachers_map,
+            klassen_map,
+            exams_list,
+            ntfy_topic=ntfy_topic,
         )
         if res in stats:
             stats[res] += 1

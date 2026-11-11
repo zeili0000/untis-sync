@@ -270,28 +270,89 @@ def build_event_payload(elem, teachers_map, klassen_map, exams_list):
     description = "\n".join(desc_lines)
     event_uid = f"untis_{elem.id}@htlsteyr"
 
+    # Status-Typ für Benachrichtigung & Tracking bestimmen
+    if is_test:
+        change_state = "test"
+    elif is_subst:
+        change_state = "subst"
+    elif is_room_change:
+        change_state = "room"
+    else:
+        change_state = "regular"
+
     event_body = {
         "summary": title,
         "description": description,
         "start": {"dateTime": elem.start.isoformat(), "timeZone": "Europe/Vienna"},
         "end": {"dateTime": elem.end.isoformat(), "timeZone": "Europe/Vienna"},
         "iCalUID": event_uid,
+        "extendedProperties": {
+            "private": {
+                "change_state": change_state,
+                "period_id": str(elem.id),
+            }
+        },
     }
     if room:
         event_body["location"] = room
     if color_id:
         event_body["colorId"] = color_id
 
-    return event_body, is_test, is_subst
+    meta = {
+        "is_test": is_test,
+        "is_subst": is_subst,
+        "is_room_change": is_room_change,
+        "change_state": change_state,
+        "subject": subject,
+        "room": room,
+        "orig_room": orig_room,
+        "teacher_names": teacher_names,
+        "subst_text": subst_text,
+    }
+    return event_body, meta
 
-def sync_single_period(cal_service, calendar_id, elem, teachers_map, klassen_map, exams_list):
+def send_ntfy_notification(topic, title, message, priority="default", tags=None):
+    """
+    Sendet eine Push-Benachrichtigung an ein ntfy.sh Topic.
+    topic: ntfy Topic-Name (ohne Domain)
+    priority: min, low, default, high, urgent (oder 1-5)
+    tags: z.B. 'warning', 'rotating_light', 'school'
+    """
+    if not topic:
+        return False
+    import urllib.request
+
+    url = f"https://ntfy.sh/{topic.strip()}"
+    req = urllib.request.Request(url, data=message.encode("utf-8"), method="POST")
+    req.add_header("Title", title.encode("utf-8"))
+    if priority:
+        req.add_header("Priority", str(priority))
+    if tags:
+        req.add_header("Tags", tags)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return response.status == 200
+    except Exception as e:
+        print(f"  [ntfy] Fehler beim Senden: {e}")
+        return False
+
+def sync_single_period(cal_service, calendar_id, elem, teachers_map, klassen_map, exams_list, ntfy_topic=None):
     """
     Synchronisiert eine einzelne Untis-Stunde:
-    - Wenn entfallen: Löscht existierende Kalendereinträge und importiert nichts.
-    - Wenn aktiv: Erstellt oder aktualisiert den Google-Kalender-Termin mit Farben & Metadaten.
+    - Wenn entfallen: Löscht existierende Kalendereinträge und sendet ntfy Alert (falls heute/morgen).
+    - Wenn aktiv: Erstellt oder aktualisiert den Google-Kalender-Termin mit Farben & Metadaten
+      und sendet bei neuen Supplierungen/Raumänderungen Push-Benachrichtigungen.
     """
     event_uid = f"untis_{elem.id}@htlsteyr"
     code = getattr(elem, "_data", {}).get("code")
+
+    today = datetime.date.today()
+    period_date = elem.start.date()
+    is_today_or_tomorrow = (today <= period_date <= today + datetime.timedelta(days=1))
+    day_str = "heute" if period_date == today else "morgen"
+    start_time_str = elem.start.strftime("%H:%M")
+    end_time_str = elem.end.strftime("%H:%M")
+    time_str = f"{start_time_str} - {end_time_str}"
 
     # ENTALLENES LÖSCHEN
     if code == "cancelled":
@@ -306,6 +367,18 @@ def sync_single_period(cal_service, calendar_id, elem, teachers_map, klassen_map
                         calendarId=calendar_id, eventId=item["id"]
                     ).execute()
                     print(f"  [ENTFALL GELÖSCHT] {event_uid} ({elem.start})")
+
+                # Push-Benachrichtigung für Entfall (nur heute/morgen)
+                if ntfy_topic and is_today_or_tomorrow:
+                    subj = elem.subjects[0].longname if elem.subjects else "Unterricht"
+                    send_ntfy_notification(
+                        topic=ntfy_topic,
+                        title=f"🚨 Entfall: {subj} ({time_str})",
+                        message=f"Deine Stunde {subj} ({day_str}, {time_str}) entfällt!",
+                        priority="high",
+                        tags="rotating_light,x",
+                    )
+
                 return "deleted"
             else:
                 return "skipped_cancelled"
@@ -314,9 +387,10 @@ def sync_single_period(cal_service, calendar_id, elem, teachers_map, klassen_map
             return "error_cancelled"
 
     # AKTIVE STUNDE SYNCHRONISIEREN
-    event_body, is_test, is_subst = build_event_payload(
+    event_body, meta = build_event_payload(
         elem, teachers_map, klassen_map, exams_list
     )
+    change_state = meta["change_state"]
 
     try:
         cal_service.events().import_(calendarId=calendar_id, body=event_body).execute()
@@ -329,8 +403,49 @@ def sync_single_period(cal_service, calendar_id, elem, teachers_map, klassen_map
             ).execute()
             items = res.get("items", [])
             if items:
+                existing_item = items[0]
+                prev_state = (
+                    existing_item.get("extendedProperties", {})
+                    .get("private", {})
+                    .get("change_state", "regular")
+                )
+
+                # Push Notification senden bei neuer Änderung für heute/morgen
+                if ntfy_topic and is_today_or_tomorrow and prev_state != change_state:
+                    subj = meta["subject"]
+                    if change_state == "subst":
+                        t_info = f" durch {', '.join(meta['teacher_names'])}" if meta["teacher_names"] else ""
+                        r_info = f" in Raum {meta['room']}" if meta["room"] else ""
+                        msg = f"Supplierung {day_str} ({time_str}){t_info}{r_info}."
+                        if meta["subst_text"]:
+                            msg += f"\nNotiz: {meta['subst_text']}"
+                        send_ntfy_notification(
+                            topic=ntfy_topic,
+                            title=f"⚠️ Supplierung: {subj} ({time_str})",
+                            message=msg,
+                            priority="high",
+                            tags="warning,repeat",
+                        )
+                    elif change_state == "room":
+                        r_from = f" (statt {meta['orig_room']})" if meta["orig_room"] else ""
+                        send_ntfy_notification(
+                            topic=ntfy_topic,
+                            title=f"🏫 Raumänderung: {subj} ({time_str})",
+                            message=f"Neuer Raum {day_str}: {meta['room']}{r_from} ({time_str})",
+                            priority="default",
+                            tags="information_source,school",
+                        )
+                    elif change_state == "test":
+                        send_ntfy_notification(
+                            topic=ntfy_topic,
+                            title=f"📝 Neuer Test: {subj} ({time_str})",
+                            message=f"Test/Prüfung für {day_str} ({time_str}) eingetragen.",
+                            priority="default",
+                            tags="memo,pencil2",
+                        )
+
                 cal_service.events().update(
-                    calendarId=calendar_id, eventId=items[0]["id"], body=event_body
+                    calendarId=calendar_id, eventId=existing_item["id"], body=event_body
                 ).execute()
                 return "updated"
             else:

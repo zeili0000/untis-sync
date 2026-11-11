@@ -2,7 +2,12 @@ name: WebUntis Sync
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    # Mo - Fr alle 10 Minuten während Schulzeit (06:00 - 17:00 CET / 05:00 - 16:00 UTC)
+    - cron: '*/10 5-16 * * 1-5'
+    # Abends für Änderungen am Folgetag (19:00, 21:00 CET / 18:00, 20:00 UTC)
+    - cron: '0 18,20 * * 1-5'
+    # Sonntagabend für Montag-Vorbereitung (19:00, 21:00 CET / 18:00, 20:00 UTC)
+    - cron: '0 18,20 * * 0'
   workflow_dispatch:
 
 jobs:
@@ -23,4 +28,5 @@ jobs:
           UNTIS_PASSWORD: ${{ secrets.UNTIS_PASSWORD }}
           CALENDAR_ID: ${{ secrets.CALENDAR_ID }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: python sync.py
