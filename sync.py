@@ -1,76 +1,62 @@
-import os
-import json
 import datetime
-import webuntis
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+from untis_core import (
+    init_google_calendar,
+    init_untis_session,
+    fetch_klassen_map,
+    fetch_exams_list,
+    fetch_teachers_map,
+    sync_single_period,
+)
 
 def main():
-    creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-    creds = service_account.Credentials.from_service_account_info(
-        creds_dict, scopes=["https://www.googleapis.com/auth/calendar"]
-    )
-    cal_service = build("calendar", "v3", credentials=creds)
-    calendar_id = os.environ["CALENDAR_ID"]
-
-    s = webuntis.Session(
-        server=os.environ["UNTIS_SERVER"],
-        username=os.environ["UNTIS_USER"],
-        password=os.environ["UNTIS_PASSWORD"],
-        school=os.environ["UNTIS_SCHOOL"],
-        useragent="GitHubActionUntisSync"
-    )
-    s.login()
+    print("=== Starte WebUntis ➔ Google Calendar Sync (28 Tage) ===")
+    cal_service, calendar_id = init_google_calendar()
+    s = init_untis_session(useragent="UntisSyncDaily")
 
     today = datetime.date.today()
     end_date = today + datetime.timedelta(days=28)
+    print(f"Zeitraum: {today} bis {end_date}")
 
+    # 1. Master Data & Metadaten vorbereiten
+    klassen_map = fetch_klassen_map(s)
+    exams_list = fetch_exams_list(s, today, end_date)
+    print(f"Gefundene Prüfungen im Zeitraum: {len(exams_list)}")
+
+    # Wöchentliche Datumsliste für Lehrerkürzel-Abruf
+    week_dates = [today + datetime.timedelta(days=i * 7) for i in range(5)]
+    teachers_map = fetch_teachers_map(s, week_dates)
+    print(f"Geladene Lehrerkürzel: {len(teachers_map)}")
+
+    # 2. Stundenplan abrufen
     timetable = s.my_timetable(start=today, end=end_date)
+    print(f"Zu verarbeitende Stunden: {len(timetable)}")
+
+    stats = {
+        "imported": 0,
+        "updated": 0,
+        "deleted": 0,
+        "skipped_cancelled": 0,
+        "errors": 0,
+    }
 
     for elem in timetable:
-        subject = elem.subjects[0].long_name if elem.subjects else "Unterricht"
-        room = elem.rooms[0].name if elem.rooms else "–"
-        
-        # Abgesicherte Lehrer-Abfrage gegen fehlende Untis-Rechte
-        teacher = ""
-        try:
-            if elem.teachers:
-                teacher = elem.teachers[0].name
-        except Exception:
-            teacher = "k.A."
-
-        title = f"{subject} ({room})"
-        if elem.code == "cancelled":
-            title = f"[ENTFALL] {title}"
-
-        start_dt = elem.start
-        end_dt = elem.end
-        event_uid = f"untis_{elem.id}@htlsteyr"
-
-        event_body = {
-            "summary": title,
-            "location": room,
-            "description": f"Lehrer: {teacher}\nStatus: {elem.code if elem.code else 'Regulär'}",
-            "start": {"dateTime": start_dt.isoformat(), "timeZone": "Europe/Vienna"},
-            "end": {"dateTime": end_dt.isoformat(), "timeZone": "Europe/Vienna"},
-            "iCalUID": event_uid,
-        }
-
-        try:
-            cal_service.events().import_(calendarId=calendar_id, body=event_body).execute()
-        except Exception:
-            events_result = cal_service.events().list(
-                calendarId=calendar_id, iCalUID=event_uid
-            ).execute()
-            items = events_result.get("items", [])
-            if items:
-                cal_service.events().update(
-                    calendarId=calendar_id, eventId=items[0]["id"], body=event_body
-                ).execute()
+        res = sync_single_period(
+            cal_service, calendar_id, elem, teachers_map, klassen_map, exams_list
+        )
+        if res in stats:
+            stats[res] += 1
+        elif "error" in res:
+            stats["errors"] += 1
 
     s.logout()
-    print("Sync erfolgreich abgeschlossen.")
+
+    print("\n=== Synchronisation abgeschlossen ===")
+    print(f"  ✨ Neu importiert: {stats['imported']}")
+    print(f"  🔄 Aktualisiert:   {stats['updated']}")
+    print(f"  🗑️  Entfall gelöscht: {stats['deleted']}")
+    print(f"  ⏭️  Entfall ignoriert: {stats['skipped_cancelled']}")
+    if stats["errors"] > 0:
+        print(f"  ⚠️ Fehler:        {stats['errors']}")
 
 if __name__ == "__main__":
     main()
-

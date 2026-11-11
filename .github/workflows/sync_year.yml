@@ -1,0 +1,24 @@
+name: WebUntis Sync Schuljahr (Full Year)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sync_year:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - env:
+          UNTIS_SERVER: ${{ secrets.UNTIS_SERVER }}
+          UNTIS_SCHOOL: ${{ secrets.UNTIS_SCHOOL }}
+          UNTIS_USER: ${{ secrets.UNTIS_USER }}
+          UNTIS_PASSWORD: ${{ secrets.UNTIS_PASSWORD }}
+          CALENDAR_ID: ${{ secrets.CALENDAR_ID }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python sync_year.py
