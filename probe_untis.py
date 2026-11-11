@@ -1,73 +1,53 @@
 import os
-import re
 import datetime
 import webuntis
 
 def probe():
+    server = os.environ["UNTIS_SERVER"]
+    school = os.environ["UNTIS_SCHOOL"]
+    user = os.environ["UNTIS_USER"]
+    password = os.environ["UNTIS_PASSWORD"]
+
     s = webuntis.Session(
-        server=os.environ["UNTIS_SERVER"],
-        username=os.environ["UNTIS_USER"],
-        password=os.environ["UNTIS_PASSWORD"],
-        school=os.environ["UNTIS_SCHOOL"],
-        useragent="GitHubActionUntisProbe"
+        server=server,
+        username=user,
+        password=password,
+        school=school,
+        useragent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     )
     s.login()
 
-    start = datetime.date(2026, 9, 14)
-    end = datetime.date(2027, 7, 10)
-    
-    test_keywords = re.compile(r'\b(test|schularbeit|sa|klausur|prüfung|pruefung|smk|wh|wiederholung)\b', re.IGNORECASE)
-    
-    current_start = start
-    chunk = 14
-    found_tests = []
-    found_types = set()
-    total_periods = 0
-    cancelled_total = 0
-    irregular_total = 0
+    http = s.config["_http_session"]
+    base_url = s.config["server"].replace("/jsonrpc.do", "").replace("?school=" + school, "")
+    jsessionid = s.config.get("jsessionid")
+    print(f"Base URL: {base_url}")
+    print(f"JSESSIONID vorhanden: {bool(jsessionid)}")
+    person_id = s.login_result.get("personId")
+    person_type = s.login_result.get("personType")
+    print(f"Login Result Person: ID={person_id}, Type={person_type}")
 
-    while current_start < end:
-        current_end = min(current_start + datetime.timedelta(days=chunk), end)
+    # Test various WebUntis endpoints
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    today_compact = datetime.date.today().strftime("%Y%m%d")
+    next_month_compact = (datetime.date.today() + datetime.timedelta(days=28)).strftime("%Y%m%d")
+
+    endpoints_to_try = [
+        # Internal exams
+        (f"{base_url}/api/exams?startDate={today_compact}&endDate={next_month_compact}", "api/exams"),
+        (f"{base_url}/api/rest/view/v1/exams?startDate={today_compact}&endDate={next_month_compact}", "rest/view/v1/exams"),
+        # WebUntis weekly data (used by WebUntis web interface!)
+        (f"{base_url}/api/public/timetable/weekly/data?elementType={person_type}&elementId={person_id}&date={today_str}&formatId=1", "weekly data"),
+        # Profile / App data
+        (f"{base_url}/api/profile", "api/profile"),
+        (f"{base_url}/api/app/config", "app config"),
+    ]
+
+    for url, desc in endpoints_to_try:
         try:
-            tt = s.my_timetable(start=current_start, end=current_end)
-            total_periods += len(tt)
-            for elem in tt:
-                raw = elem._data
-                lstype = raw.get("lstype", "")
-                code = raw.get("code")
-                if code == "cancelled":
-                    cancelled_total += 1
-                elif code == "irregular":
-                    irregular_total += 1
-
-                if lstype:
-                    found_types.add(lstype)
-
-                lstext = raw.get("lstext", "").strip()
-                subst = raw.get("substText", "").strip()
-                subject = elem.subjects[0].name if elem.subjects else "?"
-
-                if lstype == "ex" or test_keywords.search(lstext) or test_keywords.search(subst):
-                    found_tests.append({
-                        "date": raw.get("date"),
-                        "subject": subject,
-                        "lstype": lstype,
-                        "code": code,
-                        "lstext": lstext,
-                        "substText": subst,
-                    })
+            resp = http.get(url, headers={"Cookie": f"JSESSIONID={jsessionid}"})
+            print(f"[{resp.status_code}] {desc}: {resp.text[:200]}...")
         except Exception as e:
-            print(f"Fehler bei {current_start}: {e}")
-        current_start = current_end + datetime.timedelta(days=1)
-
-    print(f"Schuljahr 2026/2027 Gesamtübersicht:")
-    print(f"  - Gesamt-Stunden: {total_periods}")
-    print(f"  - Entfallene Stunden (cancelled): {cancelled_total}")
-    print(f"  - Irreguläre Stunden / Supplierungen (irregular): {irregular_total}")
-    print(f"  - Gefundene lstype-Werte: {found_types}")
-    print(f"  - Gefundene Tests/Schularbeiten: {len(found_tests)}")
-    for t in found_tests[:15]:
-        print("    *", t)
+            print(f"[ERR] {desc}: {e}")
 
     s.logout()
 
